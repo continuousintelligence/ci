@@ -1,7 +1,7 @@
 <p>
   <picture>
-    <source media="(max-width: 600px)" srcset="./assets/readme/header-mobile.svg">
-    <img src="./assets/readme/header.svg" alt="ci-proto · Continuous Intelligence"
+    <source media="(max-width: 600px)" srcset="https://raw.githubusercontent.com/continuousintelligence/ci/main/assets/readme/header-mobile.svg">
+    <img src="https://raw.githubusercontent.com/continuousintelligence/ci/main/assets/readme/header.svg" alt="ci-proto · Continuous Intelligence"
       width="1200">
   </picture>
 </p>
@@ -52,7 +52,7 @@ ci.plot_forecast(history, prediction, model.quantiles, output="forecast.png")
 ```
 
 ![Five days of hourly bicycle rentals followed by ci-proto's next-day median
-forecast and nested quantile bands.](./assets/readme/bike_sharing_forecast.png)
+forecast and nested quantile bands.](https://raw.githubusercontent.com/continuousintelligence/ci/main/assets/readme/bike_sharing_forecast.png)
 
 **The next 24 hours, with uncertainty included.** The shaded region marks the forecast
 day. The curve shows the model's median forecast, surrounded by nested quantile bands.
@@ -73,7 +73,7 @@ covariates, practical uses of the quantiles, and forecasting through missing dat
 [![Mean scaled quantile loss on fev-bench versus parameter count for ci-proto and other
 forecasting models. Lower is better.][frontier]][frontier]
 
-[frontier]: ./assets/readme/ci_proto_pareto_frontier.png
+[frontier]: https://raw.githubusercontent.com/continuousintelligence/ci/main/assets/readme/ci_proto_pareto_frontier.png
 
 ## Talk to the team
 
@@ -367,7 +367,11 @@ requests focused, and run the checks above before submitting.
 ## Licence
 
 The code and model weights are released under the
-[ci-proto Code and Model Licence](LICENCE). Third-party components retain their upstream
-licences; see [NOTICE](NOTICE) for attribution and the Apache 2.0 licence text.
+[ci-proto Code and Model Licence][licence]. Third-party components retain their upstream
+licences; see [NOTICE][notice] for attribution and the Apache 2.0 licence text.
 The bundled example data is licensed under CC BY 4.0;
-see its [notice](src/continuousintelligence/_data/NOTICE).
+see its [notice][data-notice].
+
+[licence]: https://github.com/continuousintelligence/ci/blob/main/LICENCE
+[notice]: https://github.com/continuousintelligence/ci/blob/main/NOTICE
+[data-notice]: https://github.com/continuousintelligence/ci/blob/main/src/continuousintelligence/_data/NOTICE
