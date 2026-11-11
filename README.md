@@ -299,7 +299,7 @@ and vendored kernels stay at the package level.
 <summary><strong>Local setup and tests</strong></summary>
 
 Development requires Python 3.10–3.14 and [uv](https://docs.astral.sh/uv/) 0.11.30 or later.
-The repository's `.python-version` selects Python 3.13; CI runs on Python 3.10 and 3.13.
+The repository's `.python-version` selects Python 3.13; CI runs on Python 3.10, 3.13 and 3.14.
 
 From the root of a source checkout, install the locked development dependencies:
 
