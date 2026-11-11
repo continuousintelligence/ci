@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "continuousintelligence"
-version = "0.1.0"
+version = "0.1.1"
 description = "Continuous Intelligence models"
 readme = "README.md"
 license = "LicenseRef-ci-proto AND Apache-2.0 AND CC-BY-4.0"
