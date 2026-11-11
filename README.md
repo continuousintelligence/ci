@@ -22,7 +22,7 @@
 **[Make your first forecast](#make-your-first-forecast) ·
 [See the results](#frontier-performance) ·
 [Join the waitlist for our next release](https://www.continuousintelligence.co.uk/waitlist) ·
-[Join our Design Partner Program](https://docs.google.com/forms/d/1Xo8-Z_m3Lueo2rdoEHpAyrTsQ4fL93MRWcVQQBBR2UM/edit)**
+[Join our Design Partner Program](https://docs.google.com/forms/d/e/1FAIpQLSdn59prmnz5KpJtVQlyo1FFGLA_YgIB93Z5E5pVIvpTYBnFuw/viewform)**
 
 ## Make your first forecast
 
@@ -79,7 +79,7 @@ Whether you're exploring a new idea or improving an existing system, we'd like t
 with you on a solution. Share your use case, your constraints, and what success would look
 like, and let's discuss how we can help.
 
-**[Join our Design Partner Program](https://docs.google.com/forms/d/1Xo8-Z_m3Lueo2rdoEHpAyrTsQ4fL93MRWcVQQBBR2UM/edit)**
+**[Join our Design Partner Program](https://docs.google.com/forms/d/e/1FAIpQLSdn59prmnz5KpJtVQlyo1FFGLA_YgIB93Z5E5pVIvpTYBnFuw/viewform)**
 
 ## Beyond ci-proto
 
@@ -299,7 +299,7 @@ and vendored kernels stay at the package level.
 <summary><strong>Local setup and tests</strong></summary>
 
 Development requires Python 3.10–3.14 and [uv](https://docs.astral.sh/uv/) 0.11.30 or later.
-The repository's `.python-version` selects Python 3.13; CI runs on Python 3.10 and 3.13.
+The repository's `.python-version` selects Python 3.13; CI runs on Python 3.10, 3.13 and 3.14.
 
 From the root of a source checkout, install the locked development dependencies:
 
