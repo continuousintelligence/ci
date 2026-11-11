@@ -29,8 +29,8 @@ dependencies = [
     "pandas>=2.2,<4",
     "matplotlib>=3.8,<4",
     "tilelang==0.1.8; sys_platform == 'linux' and platform_machine == 'x86_64'",
-    "apache-tvm-ffi==0.1.9; sys_platform == 'linux' and platform_machine == 'x86_64'",
-    "cuda-toolkit[nvcc,cccl]==13.0.3; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "apache-tvm-ffi==0.1.15.post2; sys_platform == 'linux' and platform_machine == 'x86_64'",
+    "cuda-toolkit[nvcc,cccl]==13.5.0; sys_platform == 'linux' and platform_machine == 'x86_64'",
 ]
 
 [project.urls]
