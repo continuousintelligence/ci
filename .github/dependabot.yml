@@ -5,6 +5,10 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    ignore:
+      - dependency-name: tilelang
+      - dependency-name: apache-tvm-ffi
+      - dependency-name: cuda-toolkit
     groups:
       python:
         patterns: ['*']
