@@ -1,0 +1,33 @@
+Continuous Intelligence models — ci-proto
+Copyright 2026 Continuous Intelligence Limited
+
+Continuous Intelligence's contributions are covered by LICENCE. The upstream
+components below retain their Apache License, Version 2.0 grants. The full
+Apache licence text is included at:
+
+    src/continuousintelligence/_vendor/mamba3/LICENSE
+
+TiRex-2
+=======
+Source: https://github.com/NX-AI/tirex-2
+
+Copyright 2026 NXAI GmbH
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this product except in compliance with the License.
+You may obtain a copy of the License at
+
+    https://www.apache.org/licenses/LICENSE-2.0
+
+xLSTM
+=====
+Source: https://github.com/NX-AI/xlstm
+Copyright 2024 NXAI GmbH and its affiliates 2024
+
+Mamba
+=====
+Source: https://github.com/state-spaces/mamba
+Copyright 2023 Tri Dao, Albert Gu
+Copyright (c) 2024, Tri Dao.
+Copyright (c) 2025, Dao AI Lab, Goombalab.
+Copyright (c) 2026, Dao AI Lab, Goombalab.

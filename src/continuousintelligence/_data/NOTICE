@@ -1,0 +1,16 @@
+Bike Sharing dataset — hourly bicycle rentals in Washington, D.C.
+
+Hadi Fanaee-T (2013). Bike Sharing [Dataset]. UCI Machine Learning Repository.
+https://doi.org/10.24432/C5W894
+Licensed under Creative Commons Attribution 4.0 International (CC BY 4.0):
+https://creativecommons.org/licenses/by/4.0/
+
+Source: https://archive.ics.uci.edu/static/public/275/bike+sharing+dataset.zip
+Extract: hour.csv, total rentals (cnt), 9–13 June 2012 (120 hourly observations).
+Changes: selected dates and columns, renamed cnt to rentals; no smoothing or imputation.
+The following 24 rows contain forecast timestamps only; their values are empty.
+
+Publication requested by the source dataset:
+Fanaee-T, H. and Gama, J. (2013). Event labeling combining ensemble detectors and
+background knowledge. Progress in Artificial Intelligence.
+https://doi.org/10.1007/s13748-013-0040-3
