@@ -1,3 +1,2 @@
 include examples/forecast.py tests/conftest.py tests/distribution.py
 include uv.lock .python-version
-exclude README.md
