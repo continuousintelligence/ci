@@ -61,6 +61,11 @@ Replace the example history with your own to get started.
 Data: Hadi Fanaee-T (2013), [Bike Sharing, UCI](https://doi.org/10.24432/C5W894),
 licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/).
 
+**Dive deeper.** The [walkthrough notebook][walkthrough] extends this example with calendar
+covariates, practical uses of the quantiles, and forecasting through missing data.
+
+[walkthrough]: https://github.com/continuousintelligence/ci/blob/main/examples/walkthrough.ipynb
+
 ## Frontier performance
 
 **The #1 foundation model on fev-bench.**
