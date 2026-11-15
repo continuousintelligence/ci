@@ -32,8 +32,9 @@
 pip install continuousintelligence
 ```
 
-Forecast the next day of bicycle rentals from five observed days of hourly demand
-in Washington, D.C. The example history is included with the package:
+Pass a PyTorch tensor, NumPy array, pandas DataFrame, or CSV file to `model.forecast`.
+The example below uses the bundled bicycle-rental data from Washington, D.C.,
+to forecast the next 24 hours from five days of hourly demand:
 
 ```python
 import continuousintelligence as ci
@@ -98,69 +99,198 @@ you can try it.
 ## Usage details
 
 <details>
-<summary><strong>Forecast inputs and outputs</strong></summary>
+<summary><strong>Usage details</strong></summary>
 
-Call `model.forecast(history, horizon=320)` with a two-dimensional PyTorch tensor. Rows
-are target variables and columns are consecutive time steps. Rows are forecast jointly by
-default. Supply `series_ids` to treat them as a cohort of independent univariate series.
+### Prepare your history
 
-In the table below, `V` is the number of target variables, `T` is the history length,
-`H` is the requested horizon, and `Q` is the number of quantile levels.
+History is the observed data you want to forecast from. ci-proto works with regularly
+sampled data, can forecast multiple variables together, and can handle missing data.
+Use `NaN` for missing values. The following formats are supported for the history:
 
-| Value | Shape or type | Description |
+**PyTorch tensors and NumPy arrays** with shape `[variables, time]`: one row per variable,
+with observations running from left to right. This example has two variables and four
+time steps:
+
+```python
+import numpy as np
+import torch
+
+values = [[12, 9, 7, 6], [8, 6, 5, 4]]
+history = np.array(values)
+# Or use a tensor with the same layout.
+history = torch.tensor(values, dtype=torch.float32)
+```
+
+**pandas DataFrames** with one column per variable and one row per time step. The same
+data looks like this:
+
+```python
+import pandas as pd
+
+history = pd.DataFrame(
+    {
+        "store_a": [12, 9, 7, 6],
+        "store_b": [8, 6, 5, 4],
+    }
+)
+```
+
+A pandas Series, such as `history["store_a"]`, can be used to forecast a single variable.
+
+**CSV files** with the same layout as a DataFrame. Include a header naming the variables:
+
+```csv
+store_a,store_b
+12,8
+9,6
+7,5
+6,4
+```
+
+Pass the file path as history.
+
+```python
+history = "examples/history.csv"
+```
+
+### Make a forecast
+
+Once you have your history, load the model and choose how many future steps to predict:
+
+```python
+import continuousintelligence as ci
+
+model = ci.load_model("ContinuousIntelligence/ci-proto")
+prediction = model.forecast(history, horizon=24)
+```
+
+`horizon` can be any positive integer and defaults to 320. For example, when forecasting hourly data, a horizon of
+24 predicts the next day. By default, all of the variables are forecast together. If you want independent forecasts, pass each variable in a separate call.
+
+### Read the forecast
+
+ci-proto returns nine quantiles from 0.1 to 0.9. The 0.5 quantile is the median forecast with the other quantiles describing the predicted range of value. All forecast values are `float32` in the original units.
+
+The output depends on the history format. Here, `V` is the number of variables, `T` is
+the history length, `H` is the horizon, and `Q` is the number of quantiles.
+
+| History | Returned forecast |
+| --- | --- |
+| PyTorch tensor | Tensor `[V, Q, H]` on the input tensor's device. |
+| NumPy array | Array `[V, Q, H]`. |
+| pandas DataFrame, Series, or CSV path | DataFrame with `H` rows and `(variable, quantile)` columns. A Series supplies its name as the variable label. |
+
+To extract the median from a DataFrame forecast or save all quantiles to CSV:
+
+```python
+median = prediction.xs(0.5, level="quantile", axis=1)
+prediction.to_csv("forecast.csv")
+```
+
+</details>
+
+<details>
+<summary><strong>Dates and frequency</strong></summary>
+
+Dates are used automatically to provide calendar information, such as the hour and day
+of the week.
+
+**PyTorch tensors and NumPy arrays**
+
+Using the tensor or NumPy history from above, supply dates for both the history and
+the forecast horizon with `timestamps` and `freq`:
+
+```python
+import pandas as pd
+import torch
+
+dates = pd.date_range("2026-11-01", periods=history.shape[1] + 24, freq="h")
+prediction = model.forecast(
+    history,
+    horizon=24,
+    timestamps=torch.tensor(dates.as_unit("ns").asi8),
+    freq="h",
+)
+```
+
+**pandas DataFrames**
+
+For a DataFrame, you can attach them with a `DatetimeIndex`:
+
+```python
+history.index = pd.date_range("2026-11-01", periods=len(history), freq="h")
+```
+
+**CSV files**
+
+For a CSV file, dates go in a `timestamp` column:
+
+```csv
+timestamp,store_a,store_b
+2026-11-01T00:00:00,12,8
+2026-11-01T01:00:00,9,6
+2026-11-01T02:00:00,7,5
+2026-11-01T03:00:00,6,4
+```
+
+The [example CSV](examples/history.csv) contains two series with hourly timestamps:
+
+```python
+prediction = model.forecast("examples/history.csv", horizon=24)
+```
+
+The timestamp arguments use the following shapes, with `T`, `H`, and `V` as defined above:
+
+| Argument | Shape or type | Description |
 | --- | --- | --- |
-| `history` | `[V, T]` | Observed target values. Use `NaN` for missing observations. |
-| `horizon` | `int` | Number of future steps to predict. Any positive integer; defaults to 320. |
-| Returned forecast | `[V, Q, H]` | CPU `float32` tensor in the original target units, ordered by quantile level. |
-| `model.quantiles` | `[Q]` | CPU tensor containing the probability level for each output quantile. |
+| `timestamps` | `int64` tensor `[T + H]` or `[V, T + H]` | Epoch nanoseconds covering history and horizon, in increasing order. |
+| `freq` | String | Sampling frequency, such as `"h"`, `"D"`, or `"W"`. Inferred from dated pandas and CSV inputs when possible. |
 
-Input tensors can be real values or `NaN`. ci-proto returns nine quantiles
-between 0.1 and 0.9 in increments of 0.1. Histories up to 16,384 observations use the
-standard checkpoint. Longer histories automatically use the long checkpoint with the full
-supplied history. The median is the central quantile.
+For gaps in a regular history, insert the missing time steps and use `NaN` for their values. For uneven histories, left-pad values with `NaN` and timestamps with `torch.iinfo(torch.int64).min`.
 
 </details>
 
 <details>
 <summary><strong>Covariates and categorical inputs</strong></summary>
 
-Pass covariates as keyword arguments to
-`model.forecast(..., past_covariates=..., future_covariates=...)`. Only the variables in
-`history` receive forecasts. Align all tensors to the same time axis before calling the
-model.
+Covariates are extra inputs that can help explain the variables in your history. Past
+covariates contain observations available up to the forecast origin. Future covariates
+contain values known for both the history and forecast horizon, such as a planned promotion.
+
+Pass them to `model.forecast` as `past_covariates` and `future_covariates`. They accept
+the same formats and layouts as history. Align all inputs to the same time axis. Only
+the variables in `history` receive forecasts. History also determines the output format
+and device.
 
 | Argument | Shape | Requirements |
 | --- | --- | --- |
 | `past_covariates` | `[past_variables, T]` | Must have exactly the same history length as `history`. |
 | `future_covariates` | `[known_variables, T + H]` | Must cover both the observed history and the requested forecast horizon. |
-| `categorical_past` | Tuple of row indices | Selects categorical rows in `past_covariates`; defaults to `()`. |
-| `categorical_future` | Tuple of row indices | Selects categorical rows in `future_covariates`; defaults to `()`. |
+| `categorical_past` | Tuple of variable indices | Selects categorical variables in `past_covariates`; defaults to `()`. |
+| `categorical_future` | Tuple of variable indices | Selects categorical variables in `future_covariates`; defaults to `()`. |
 
-Represent categorical values with numeric category codes. For example,
-`categorical_future=(0, 2)` marks its first and third rows as categorical.
-Boolean covariates can be supplied as numeric
-inputs without marking them categorical. Use `NaN` for missing covariate observations.
+A categorical covariate describes a category, such as the type of promotion running in
+a store. For example, `0` could mean no promotion, `1` an email campaign, and `2` a discount.
+These numbers identify categories rather than quantities.
 
-</details>
+```python
+history = pd.DataFrame({"sales": [12, 9, 7, 6]})
+future_covariates = pd.DataFrame({"promotion_type": [0, 0, 1, 2, 1, 0]})
+prediction = model.forecast(
+    history,
+    horizon=2,
+    future_covariates=future_covariates,
+    categorical_future=(0,),
+)
+```
 
-<details>
-<summary><strong>Timestamps and related series</strong></summary>
+The first four rows of `future_covariates` cover the history and the last two cover the
+forecast horizon. `categorical_future=(0,)` marks the first covariate as categorical.
+Indices refer to tensor/array rows or pandas/CSV columns, starting from zero.
+Use `categorical_past` in the same way for past covariates.
 
-Pass optional metadata to add calendar features or context from related series.
-
-| Argument | Shape or type | Description |
-| --- | --- | --- |
-| `timestamps` | `int64` tensor `[T + H]` or `[V, T + H]` | Epoch nanoseconds covering history and horizon. Must increase strictly. |
-| `freq` | String | Pandas frequency, such as `"h"`, `"D"` or `"W"`. Required for calendar features. |
-| `series_ids` | `V` unique strings | Identifies independent series in input row order. |
-| `static_features` | Mapping of column names to `V` values | Optional grouping metadata, such as `{"region": ["north", "south"]}`. Requires `series_ids`. |
-
-Pass all related series together. Context is shared only between series with the same
-forecast origin. Covariates can be shared across series or supplied per series as
-`[V, covariates, time]`.
-
-For uneven histories, left-pad values with `NaN` and timestamps with
-`torch.iinfo(torch.int64).min`.
+Boolean covariates can be supplied as numeric inputs without marking them categorical.
+Use `NaN` for missing covariate observations.
 
 </details>
 
@@ -196,6 +326,9 @@ returns it. Hugging Face models always include it; local bundles may omit it.
 For reproducibility, pin Hugging Face models with a full commit SHA. `revision` applies
 only to Hub loading. Use `./` or a `Path` object to identify local paths explicitly.
 
+Histories up to 16,384 observations use the standard checkpoint. Longer histories
+automatically use the long checkpoint with the full supplied history.
+
 </details>
 
 <details>
@@ -218,8 +351,10 @@ Fused inference requires CUDA-enabled PyTorch, an Ampere-or-newer NVIDIA GPU, a
 580-series-or-newer driver, and a host C++ compiler. Replace CPU-only PyTorch to enable
 GPU inference.
 
-Inspect `model.device` and `model.backend`: `"mamba3"` means fused CUDA inference;
-`"torch"` means the portable backend. Forecast outputs are always CPU tensors.
+Inference runs on `model.device`. Tensor forecasts return on the input tensor's device,
+including its CUDA device index. NumPy and pandas outputs are on the CPU.
+
+`model.backend` is `"mamba3"` for fused CUDA inference or `"torch"` for the portable backend.
 
 Reference results use H100 with PyTorch `2.13.0+cu130`. Reduced-precision results can vary
 across runtimes.
@@ -227,11 +362,11 @@ across runtimes.
 </details>
 
 <details>
-<summary><strong>Other data and plotting options</strong></summary>
+<summary><strong>Plotting forecasts</strong></summary>
 
-`ci.plot_forecast(history, prediction, quantiles)` works with your own data:
-history has shape `[variables, time]`, predictions `[variables, quantiles, horizon]`,
-and the quantile levels form a sorted vector including `0.5` for the median.
+`ci.plot_forecast(history, prediction, quantiles)` accepts tensors: history has shape
+`[variables, time]`, predictions `[variables, quantiles, horizon]`, and quantile levels
+form a sorted vector including `0.5` for the median.
 Each variable gets its own panel with the median and available nested quantile bands.
 The function returns a Matplotlib figure; `output` saves it to a file. Pass `timestamps`
 covering history plus horizon for a date axis, and `ylabel` to label the values.
@@ -248,9 +383,9 @@ python examples/forecast.py --model ContinuousIntelligence/ci-proto
 
 The plot is saved to `outputs/forecast.png`.
 
-To forecast another source, pass `--data` with a CSV file and name its columns with
-`--time-column` and `--value-column`. If the file has a `split` column, rows marked
-`history` are observed and the following rows marked `forecast` set the horizon.
+The plotting script reads CSV files using its own column options. Pass `--data` and name
+the columns with `--time-column` and `--value-column`. If the file has a `split` column,
+rows marked `history` are observed and the following rows marked `forecast` set the horizon.
 Otherwise every row is history; pass `--horizon`, and future timestamps continue the
 inferred frequency. `--ylabel` sets the axis label.
 
@@ -278,7 +413,7 @@ calibration run automatically without changing model weights.
 | `target_encode_categoricals` | Encodes categories using observed target statistics. |
 | `clip_nonnegative` | Keeps forecasts nonnegative when the observed history is nonnegative. |
 | `integer_round` | Rounds forecasts when the observed history contains only integers. |
-| `calendar_covariates` | Adds calendar features when timestamps and frequency are supplied. |
+| `calendar_covariates` | Adds calendar features from dates and frequency. |
 | `bfloat16` | Enables reduced-precision inference; `false` uses float32. |
 
 Edit a local `tta.json` to change these flags. Encoding, clipping, rounding, calendar

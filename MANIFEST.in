@@ -1,2 +1,3 @@
 include examples/forecast.py tests/conftest.py tests/distribution.py
+include examples/history.csv
 include uv.lock .python-version
