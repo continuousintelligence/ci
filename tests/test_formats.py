@@ -43,9 +43,7 @@ def test_forecast_returns_expected_container(release_files, tmp_path, kind, coho
         assert isinstance(actual, pd.DataFrame)
         pd.testing.assert_index_equal(actual.index, pd.RangeIndex(3, name="step"))
         assert actual.columns.names == ["variable", "quantile"]
-        assert actual.columns.tolist() == [
-            (label, q) for label in labels for q in model.quantiles.tolist()
-        ]
+        assert actual.columns.tolist() == [(label, q) for label in labels for q in (0.1, 0.5, 0.9)]
         np.testing.assert_array_equal(actual.to_numpy(), expected.transpose(2, 0, 1).reshape(3, -1))
         assert all(dtype == np.float32 for dtype in actual.dtypes)
         if kind == "series":
@@ -137,6 +135,44 @@ def test_invalid_formats_fail_before_inference(history):
     with pytest.raises(ValueError, match="history"):
         Forecaster(neural, TTA).forecast(history, 2)
     assert not neural.batches
+
+
+@pytest.mark.parametrize("name", ["history", "past_covariates", "future_covariates"])
+@pytest.mark.parametrize("dated", [False, True])
+def test_csv_rejects_unnamed_columns_before_inference(tmp_path, name, dated):
+    length = 6 if name == "future_covariates" else 4
+    frame = pd.DataFrame({"load": np.arange(length)})
+    if dated:
+        frame.index = pd.date_range("2026-11-01", periods=length, freq="h")
+    path = tmp_path / "history.csv"
+    frame.to_csv(path)
+    neural = Probe()
+    arguments = {"history": torch.ones(1, 4), name: path}
+    with pytest.raises(ValueError, match="unnamed column.*index=False.*timestamp"):
+        Forecaster(neural, TTA).forecast(**arguments, horizon=2)
+    assert not neural.batches
+
+
+@pytest.mark.parametrize("count", [9, 99])
+@pytest.mark.parametrize("kind", ["dataframe", "series", "csv"])
+def test_quantile_labels_are_probabilities(tmp_path, count, kind):
+    neural = Probe([list(range(count))])
+    neural.quantiles = torch.arange(1, count + 1, dtype=torch.float32) / (count + 1)
+    frame = pd.DataFrame({"load": [0.25, -0.5, 0.75, -0.25]})
+    source = frame["load"] if kind == "series" else frame
+    if kind == "csv":
+        source = tmp_path / "history.csv"
+        frame.to_csv(source, index=False)
+    actual = Forecaster(neural, TTA).forecast(source, 3)
+    lower = actual.xs(0.1, level="quantile", axis=1)["load"]
+    upper = actual[("load", 0.9)]
+    pd.testing.assert_series_equal(lower, actual.iloc[:, (count + 1) // 10 - 1], check_names=False)
+    pd.testing.assert_series_equal(
+        upper, actual.iloc[:, 9 * (count + 1) // 10 - 1], check_names=False
+    )
+    assert actual.columns.get_level_values("quantile").tolist() == [
+        i / (count + 1) for i in range(1, count + 1)
+    ]
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="CUDA hardware is unavailable")

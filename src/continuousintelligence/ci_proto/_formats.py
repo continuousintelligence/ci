@@ -14,9 +14,13 @@ ForecastOutput = Tensor | np.ndarray | pd.DataFrame
 
 def _read_csv(path: str | Path) -> pd.DataFrame:
     frame = pd.read_csv(Path(path).expanduser())
+    if any(column.startswith("Unnamed:") for column in frame.columns):
+        raise ValueError(
+            "CSV has an unnamed column; save with index=False or name the date column 'timestamp'"
+        )
     if "timestamp" in frame.columns:
         frame = frame.set_index("timestamp")
-        frame.index = pd.DatetimeIndex(pd.to_datetime(frame.index))
+        frame.index = pd.DatetimeIndex(pd.to_datetime(frame.index, utc=True))
     return frame
 
 
@@ -65,7 +69,7 @@ def prepare_history(
     horizon: int,
     timestamps: Tensor | None,
     freq: str | None,
-) -> tuple[Tensor, Callable[[Tensor], ForecastOutput], Tensor | None, str | None]:
+) -> tuple[Tensor, Callable[[Tensor], ForecastOutput], Tensor | None, str | None, Tensor | None]:
     """Remember output labels and the caller's device before converting history."""
     if isinstance(history, (str, Path)):
         history = _read_csv(history)
@@ -74,11 +78,12 @@ def prepare_history(
     tensor = as_tensor(history, "history")
     if isinstance(history, Tensor):
         device = history.device
-        return tensor, lambda prediction: prediction.to(device), timestamps, freq
+        return tensor, lambda prediction: prediction.to(device), timestamps, freq, None
     if isinstance(history, np.ndarray):
-        return tensor, lambda prediction: prediction.cpu().numpy(), timestamps, freq
+        return tensor, lambda prediction: prediction.cpu().numpy(), timestamps, freq, None
 
     future_index = pd.RangeIndex(horizon, name="step")
+    calendar_stamps = None
     if isinstance(history.index, pd.DatetimeIndex):
         dates, stamps, freq = _dates(history.index, horizon, freq)
         if timestamps is not None:
@@ -95,13 +100,16 @@ def prepare_history(
                 raise ValueError("timestamps must match the history dates and forecast frequency")
         else:
             timestamps = stamps
+        if dates.tz is not None:
+            # Validate absolute timestamps above; use local wall time only for calendar features.
+            calendar_stamps = torch.from_numpy(dates.tz_localize(None).as_unit("ns").asi8.copy())
         future_index = dates[len(history) :]
 
-    levels = quantiles.tolist()
+    levels = [round(level, 6) for level in quantiles.tolist()]
     columns = pd.MultiIndex.from_product([history.columns, levels], names=["variable", "quantile"])
 
     def restore_frame(prediction: Tensor) -> pd.DataFrame:
         values = prediction.permute(2, 0, 1).cpu().numpy().reshape(horizon, -1)
         return pd.DataFrame(values, index=future_index, columns=columns)
 
-    return tensor, restore_frame, timestamps, freq
+    return tensor, restore_frame, timestamps, freq, calendar_stamps

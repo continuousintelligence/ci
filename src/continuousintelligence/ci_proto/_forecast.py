@@ -77,6 +77,8 @@ class Forecaster:
         CSV files may include a ``timestamp`` column. A pandas DatetimeIndex or
         CSV timestamps supply calendar dates; frequency is inferred or set by
         ``freq``. Dated histories must be regularly spaced.
+        Pandas calendar features use the index's local time. CSV dates and calendar
+        features use UTC.
         ``past_covariates``: ``[past_variables, time]``.
         ``future_covariates``: ``[known_variables, time + horizon]``; extra future
         steps are ignored. Only supply values known at forecast time. Categorical
@@ -103,7 +105,7 @@ class Forecaster:
         model, tta = self._model, self._tta
         if type(horizon) is not int or horizon < 1:
             raise ValueError("horizon must be a positive integer")
-        history, restore, timestamps, freq = prepare_history(
+        history, restore, timestamps, freq, calendar_stamps = prepare_history(
             history, model.get_buffer("quantiles"), horizon, timestamps, freq
         )
         if past_covariates is not None:
@@ -148,6 +150,7 @@ class Forecaster:
                 freq,
                 series_ids,
                 static_features,
+                calendar_stamps=calendar_stamps,
             )
             return restore(_run_cases(model, cases, count, horizon, tta))
         if static_features is not None:
@@ -158,6 +161,8 @@ class Forecaster:
             stamps = stamps[0]
             start = int((stamps != torch.iinfo(torch.int64).min).long().argmax())
             history, stamps = history[:, start:], stamps[start:]
+            if calendar_stamps is not None:
+                calendar_stamps = calendar_stamps[start:]
             if past_covariates is not None:
                 past_covariates = past_covariates[:, start:]
             if future_covariates is not None:
@@ -172,7 +177,12 @@ class Forecaster:
             bool(tta["target_encode_categoricals"]),
         )
         context, future = _with_calendar(
-            context, future, count, stamps, freq, bool(tta["calendar_covariates"])
+            context,
+            future,
+            count,
+            stamps if calendar_stamps is None else calendar_stamps,
+            freq,
+            bool(tta["calendar_covariates"]),
         )
         return restore(_predict(model, context[None], future[None], count, horizon, tta)[0])
 
@@ -579,6 +589,8 @@ def _cohort_cases(
     freq: str | None,
     series_ids: Sequence[str],
     static_features: Mapping[str, Sequence[object]] | None,
+    *,
+    calendar_stamps: Tensor | None = None,
 ) -> Iterable[_Case]:
     from ._groups import chunk_groups, joint_neighbour_rows, static_group_rows
 
@@ -609,7 +621,7 @@ def _cohort_cases(
         calendar_stamps = None
         starts = [0] * count
     else:
-        calendar_stamps = stamps
+        calendar_stamps = stamps if calendar_stamps is None else calendar_stamps.expand_as(stamps)
         starts = (stamps != torch.iinfo(torch.int64).min).long().argmax(dim=1).tolist()
     order = sorted(range(count), key=lambda i: series_ids[i])
     stamps_np = stamps.numpy()

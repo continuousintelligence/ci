@@ -221,6 +221,8 @@ For a DataFrame, you can attach them with a `DatetimeIndex`:
 history.index = pd.date_range("2026-11-01", periods=len(history), freq="h")
 ```
 
+Calendar features use the local time in the index.
+
 **CSV files**
 
 For a CSV file, dates go in a `timestamp` column:
@@ -232,6 +234,9 @@ timestamp,store_a,store_b
 2026-11-01T02:00:00,7,5
 2026-11-01T03:00:00,6,4
 ```
+
+CSV dates are converted to UTC, which is used for calendar features and the forecast
+index. Dates without a timezone are treated as UTC.
 
 The [example CSV](examples/history.csv) contains two series with hourly timestamps:
 

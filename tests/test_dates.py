@@ -9,7 +9,7 @@ import torch
 from test_forecast import TTA, Probe
 
 from continuousintelligence import load_model
-from continuousintelligence.ci_proto import Forecaster
+from continuousintelligence.ci_proto import Forecaster, _calendar
 
 
 @pytest.mark.parametrize("cohort", [False, True])
@@ -43,9 +43,9 @@ def test_dated_forecast_matches_explicit_calendar_inputs(release_files, tmp_path
     actual = model.forecast(source, 3, **arguments)
     expected = pd.DataFrame(
         expected.permute(2, 0, 1).numpy().reshape(3, -1),
-        index=dates[4:],
+        index=dates[4:].tz_localize("UTC") if kind.startswith("csv_") else dates[4:],
         columns=pd.MultiIndex.from_product(
-            [frame.columns, model.quantiles.tolist()], names=["variable", "quantile"]
+            [frame.columns, [0.1, 0.5, 0.9]], names=["variable", "quantile"]
         ),
     )
     pd.testing.assert_frame_equal(actual, expected)
@@ -84,6 +84,72 @@ def test_utc_csv_preserves_dates(tmp_path):
     pd.testing.assert_index_equal(prediction.index, dates[4:])
 
 
+@pytest.mark.parametrize("cohort", [False, True])
+@pytest.mark.parametrize("start", ["2026-03-08 00:00", "2026-11-01 00:00"])
+def test_csv_across_daylight_saving_uses_utc(tmp_path, start, cohort):
+    dates = pd.date_range(start, periods=7, freq="h", tz="America/New_York", name="timestamp")
+    frame = pd.DataFrame(
+        {"load": [0.25, -0.5, 0.75, -0.25], "temperature": [1.5, -2.5, 3.5, -4.5]},
+        index=dates[:4],
+    )
+    path = tmp_path / "history.csv"
+    frame.to_csv(path)
+    neural = Probe()
+    model = Forecaster(neural, TTA)
+    arguments = {"series_ids": list(frame.columns)} if cohort else {}
+    actual = model.forecast(path, 3, **arguments)
+    expected = model.forecast(
+        torch.from_numpy(frame.to_numpy().T.copy()),
+        3,
+        timestamps=torch.tensor(dates.as_unit("ns").asi8),
+        freq="h",
+        **arguments,
+    )
+    pd.testing.assert_index_equal(actual.index, dates[4:].tz_convert("UTC"))
+    np.testing.assert_array_equal(
+        actual.to_numpy(), expected.permute(2, 0, 1).numpy().reshape(3, -1)
+    )
+    for key in neural.batches[0]:
+        torch.testing.assert_close(neural.batches[0][key], neural.batches[1][key], equal_nan=True)
+
+
+@pytest.mark.parametrize("cohort", [False, True])
+@pytest.mark.parametrize(
+    "start,freq,zone,channel,expected",
+    [
+        ("2026-11-02", "D", "Europe/Berlin", 0, [0, 1, 2, 3]),
+        ("2026-12-24", "D", "Europe/Berlin", 2, [1, 1, 1, 0]),
+        ("2026-11-02", "h", "America/New_York", 0, [0, 1, 2, 3]),
+        ("2026-01-01", "MS", "Europe/Berlin", 0, [0, 1, 2, 3]),
+        ("2026-03-08 00:00", "h", "America/New_York", 0, [0, 1, 3, 4, 5, 6]),
+        ("2026-11-01 00:00", "h", "America/New_York", 0, [0, 1, 1, 2, 3, 4]),
+        ("2026-03-07 23:00", "h", "America/New_York", 0, [23, 0, 1, 3, 4, 5]),
+        ("2026-10-31 23:00", "h", "America/New_York", 0, [23, 0, 1, 1, 2, 3]),
+    ],
+)
+def test_pandas_calendar_follows_local_time(
+    monkeypatch, start, freq, zone, channel, expected, cohort
+):
+    original = _calendar.calendar_channels
+    captured = []
+
+    def capture(stamps, step):
+        result = original(stamps, step)
+        captured.append(result.copy())
+        return result
+
+    monkeypatch.setattr(_calendar, "calendar_channels", capture)
+    dates = pd.date_range(start, periods=len(expected), freq=freq, tz=zone, name="time")
+    frame = pd.DataFrame(
+        {"load": [0.25, -0.5, 0.75], "temperature": [1.5, -2.5, 3.5]}, index=dates[:3]
+    )
+    arguments = {"series_ids": list(frame.columns)} if cohort else {}
+    prediction = Forecaster(Probe(), TTA).forecast(frame, len(expected) - 3, **arguments)
+    assert len(captured) == 1
+    np.testing.assert_array_equal(captured[0][channel], expected)
+    pd.testing.assert_index_equal(prediction.index, dates[3:])
+
+
 @pytest.mark.parametrize("length", [1, 2])
 def test_short_history_accepts_explicit_frequency(length):
     dates = pd.date_range("2026-11-01", periods=length + 2, freq="h")
@@ -116,8 +182,9 @@ def test_invalid_dates_fail_before_inference(dates, freq, message):
 
 
 @pytest.mark.parametrize("per_series", [False, True])
-def test_explicit_timestamps_must_agree_with_dated_history(per_series):
-    dates = pd.date_range("2026-11-01", periods=6, freq="h")
+@pytest.mark.parametrize("zone", [None, "America/New_York"])
+def test_explicit_timestamps_must_agree_with_dated_history(per_series, zone):
+    dates = pd.date_range("2026-11-01", periods=6, freq="h", tz=zone)
     frame = pd.DataFrame({"load": [0.25, -0.5, 0.75, -0.25]}, index=dates[:4])
     stamps = torch.tensor(dates.as_unit("ns").asi8)
     if per_series:
@@ -162,7 +229,7 @@ def test_dated_csv_covariates(tmp_path):
 def test_example_csv():
     path = Path(__file__).resolve().parents[1] / "examples" / "history.csv"
     prediction = Forecaster(Probe(), TTA).forecast(path, 3)
-    expected = pd.date_range("2026-11-02", periods=3, freq="h", name="timestamp")
+    expected = pd.date_range("2026-11-02", periods=3, freq="h", tz="UTC", name="timestamp")
     pd.testing.assert_index_equal(prediction.index, expected)
     assert prediction.columns.get_level_values("variable").unique().tolist() == [
         "store_a",
