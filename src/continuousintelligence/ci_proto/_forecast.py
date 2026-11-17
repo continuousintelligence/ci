@@ -18,6 +18,7 @@ import torch
 from torch import Tensor, nn
 from torch.nn.functional import pad
 
+from ._formats import ForecastInput, ForecastOutput, as_tensor, prepare_history
 from ._model import Model, forecast_layout
 
 
@@ -56,21 +57,28 @@ class Forecaster:
 
     def forecast(
         self,
-        history: Tensor,
+        history: ForecastInput,
         horizon: int = 320,
         *,
-        past_covariates: Tensor | None = None,
-        future_covariates: Tensor | None = None,
+        past_covariates: ForecastInput | None = None,
+        future_covariates: ForecastInput | None = None,
         categorical_past: tuple[int, ...] = (),
         categorical_future: tuple[int, ...] = (),
         timestamps: Tensor | None = None,
         freq: str | None = None,
         series_ids: Sequence[str] | None = None,
         static_features: Mapping[str, Sequence[object]] | None = None,
-    ) -> Tensor:
+    ) -> ForecastOutput:
         """Forecast joint variables, or independent series identified by ``series_ids``.
 
-        ``history``: float tensor ``[variables, time]``; NaN denotes missing data.
+        ``history``: tensor or NumPy array ``[variables, time]``, pandas DataFrame
+        (time rows, variable columns), Series, or CSV path with numeric columns.
+        NaN denotes missing data. Covariates accept the same input formats.
+        CSV files may include a ``timestamp`` column. A pandas DatetimeIndex or
+        CSV timestamps supply calendar dates; frequency is inferred or set by
+        ``freq``. Dated histories must be regularly spaced.
+        Pandas calendar features use the index's local time. CSV dates and calendar
+        features use UTC.
         ``past_covariates``: ``[past_variables, time]``.
         ``future_covariates``: ``[known_variables, time + horizon]``; extra future
         steps are ignored. Only supply values known at forecast time. Categorical
@@ -86,17 +94,26 @@ class Forecaster:
         names to values in input row order. Cohort covariates can also be shaped
         ``[variables, covariates, time]``, including the horizon for known values.
 
-        Returns CPU float32 quantiles ``[variables, quantiles, horizon]``, in
-        original units, with levels given by ``self.quantiles``. ci-proto returns
-        nine quantiles between 0.1 and 0.9 in increments of 0.1. Horizon is any
-        positive integer and defaults to 320.
+        Returns float32 quantiles in the original units. Tensors retain the input
+        device; NumPy inputs return arrays, both ``[variables, quantiles, horizon]``.
+        Pandas and CSV inputs return a DataFrame with horizon rows and
+        ``(variable, quantile)`` columns, indexed by future dates for dated inputs
+        or by steps starting at zero otherwise.
+        Levels are given by ``self.quantiles``. Horizon is any positive integer
+        and defaults to 320.
         """
         model, tta = self._model, self._tta
         if type(horizon) is not int or horizon < 1:
             raise ValueError("horizon must be a positive integer")
+        history, restore, timestamps, freq, calendar_stamps = prepare_history(
+            history, model.get_buffer("quantiles"), horizon, timestamps, freq
+        )
+        if past_covariates is not None:
+            past_covariates = as_tensor(past_covariates, "past_covariates")
+        if future_covariates is not None:
+            future_covariates = as_tensor(future_covariates, "future_covariates")
         if (
             self._long_model is not None
-            and isinstance(history, Tensor)
             and history.ndim == 2
             and history.shape[-1] > model.config.context_len
         ):
@@ -133,8 +150,9 @@ class Forecaster:
                 freq,
                 series_ids,
                 static_features,
+                calendar_stamps=calendar_stamps,
             )
-            return _run_cases(model, cases, count, horizon, tta)
+            return restore(_run_cases(model, cases, count, horizon, tta))
         if static_features is not None:
             raise ValueError("static_features requires series_ids")
         if stamps is not None:
@@ -143,6 +161,8 @@ class Forecaster:
             stamps = stamps[0]
             start = int((stamps != torch.iinfo(torch.int64).min).long().argmax())
             history, stamps = history[:, start:], stamps[start:]
+            if calendar_stamps is not None:
+                calendar_stamps = calendar_stamps[start:]
             if past_covariates is not None:
                 past_covariates = past_covariates[:, start:]
             if future_covariates is not None:
@@ -157,9 +177,14 @@ class Forecaster:
             bool(tta["target_encode_categoricals"]),
         )
         context, future = _with_calendar(
-            context, future, count, stamps, freq, bool(tta["calendar_covariates"])
+            context,
+            future,
+            count,
+            stamps if calendar_stamps is None else calendar_stamps,
+            freq,
+            bool(tta["calendar_covariates"]),
         )
-        return _predict(model, context[None], future[None], count, horizon, tta)[0]
+        return restore(_predict(model, context[None], future[None], count, horizon, tta)[0])
 
 
 def _rows(
@@ -448,7 +473,7 @@ def _predict(
     expected = (samples * n_targets, model.get_buffer("quantiles").numel(), horizon)
     if pred.shape != expected or not bool(torch.isfinite(pred).all()):
         raise ValueError("model returned invalid forecast values or shape")
-    return pred.reshape(samples, n_targets, -1, horizon).detach().cpu()
+    return pred.reshape(samples, n_targets, -1, horizon).detach()
 
 
 def _timestamps(
@@ -564,6 +589,8 @@ def _cohort_cases(
     freq: str | None,
     series_ids: Sequence[str],
     static_features: Mapping[str, Sequence[object]] | None,
+    *,
+    calendar_stamps: Tensor | None = None,
 ) -> Iterable[_Case]:
     from ._groups import chunk_groups, joint_neighbour_rows, static_group_rows
 
@@ -594,7 +621,7 @@ def _cohort_cases(
         calendar_stamps = None
         starts = [0] * count
     else:
-        calendar_stamps = stamps
+        calendar_stamps = stamps if calendar_stamps is None else calendar_stamps.expand_as(stamps)
         starts = (stamps != torch.iinfo(torch.int64).min).long().argmax(dim=1).tolist()
     order = sorted(range(count), key=lambda i: series_ids[i])
     stamps_np = stamps.numpy()
@@ -682,7 +709,13 @@ def _run_cases(
     horizon: int,
     tta: Mapping[str, float],
 ) -> Tensor:
-    out = torch.empty(count, model.get_buffer("quantiles").numel(), horizon)
+    out = torch.empty(
+        count,
+        model.get_buffer("quantiles").numel(),
+        horizon,
+        device=next(model.parameters()).device,
+        dtype=torch.float32,
+    )
     pending: dict[tuple[int, int, int], list[_Case]] = {}
     rows = 0
     views = 2 if tta["postprocess"] and tta["tta_sign_flip"] else 1
