@@ -53,7 +53,8 @@ checkout and `--output` for another folder.
 
 - WIS ([Bracher et al. 2021](https://doi.org/10.1371/journal.pcbi.1008618)) rewards a median
   close to the outcome and ranges that are narrow but still contain it. We recompute the WIS of
-  every model using only the nine quantile levels ci-proto produces, 10% to 90%.
+  all models using the same nine quantile levels as the ones that ci-proto produces,
+  specifically, 10% to 90%.
 - Models are scored on the same forecasts as RespiCast's own evaluation: the countries and
   horizons the hub asks for in each round.
 - Each comparison is a ratio of total WIS. Intervals resample rounds (10,000 draws) and need at
