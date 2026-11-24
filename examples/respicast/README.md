@@ -1,10 +1,11 @@
 # ci-proto on Europe's respiratory forecasting hub
 
-[RespiCast](https://respicast.ecdc.europa.eu/) is the forecasting hub ECDC runs with the ISI
-Foundation and LSHTM. Every week, teams send it forecasts of influenza-like illness (ILI) and
-acute respiratory infection (ARI) across Europe. The hub combines them into an ensemble, the
-median of the teams' forecasts, which ECDC publishes in its weekly
-[ERVISS](https://erviss.org/) report.
+[RespiCast](https://respicast.ecdc.europa.eu/) is the forecasting hub run by the European Centre
+for Disease Prevention and Control (ECDC) with the Institute for Scientific Interchange (ISI)
+Foundation and the London School of Hygiene & Tropical Medicine (LSHTM). Every week, teams send
+it forecasts of influenza-like illness (ILI) and acute respiratory infection (ARI) across
+Europe. ECDC combines these forecasts into an ensemble, the median of the teams' forecasts, and
+publishes it weekly on the [RespiCast website](https://respicast.ecdc.europa.eu/forecasts/).
 
 These scripts replay every round since August 2025 with ci-proto and score it against the
 ensemble and every submitted model. We use the released model at a pinned revision. The model
@@ -13,15 +14,20 @@ histories of all countries go into a single call per indicator, as raw weekly ra
 100,000. Each round uses only the data the hub had published by its deadline, and forecasts are
 scored against the latest data.
 
-ci-proto's training data contains no ERVISS or RespiCast data. European ILI data up to April
-2025 form part of the [fev-bench](https://github.com/autogluon/fev) test set, on which ci-proto
-has been publicly evaluated. The evaluation here starts with the round of 6 August 2025.
+ci-proto's training data contains no RespiCast data, and none from ECDC's European Respiratory
+Virus Surveillance Summary ([ERVISS](https://erviss.org/)), the source of most of the hub's
+data. European ILI data up to April 2025 form part of the
+[fev-bench](https://github.com/autogluon/fev) test set, on which ci-proto has been publicly
+evaluated. The evaluation here starts with the round of 6 August 2025. Each round is one week's
+forecasts, and seasons run from August to July, so 2025-26 covers the 50 rounds from 6 August
+2025 to 22 July 2026 (the hub skipped two summer weeks).
 
 ## Results
 
 Forecasts are scored with the weighted interval score (WIS), the score RespiCast publishes for
-every model. The table gives ci-proto's total WIS divided by the RespiCast ensemble's (below 1:
-ci-proto had lower error), with 90% intervals from resampling rounds:
+every model. The table gives ci-proto's total WIS divided by the RespiCast ensemble's. Values
+below 1 mean ci-proto had lower error. The brackets give 90% intervals from resampling the
+rounds.
 
 | Season | Rounds | Forecasts | Both indicators | ARI | ILI |
 |---|---:|---:|---|---|---|
@@ -46,8 +52,8 @@ checkout and `--output` for another folder.
 ## Scoring
 
 - WIS ([Bracher et al. 2021](https://doi.org/10.1371/journal.pcbi.1008618)) rewards a median
-  close to the outcome and ranges that are narrow but still contain it. Every model is scored on
-  the nine quantile levels ci-proto produces, 10% to 90%.
+  close to the outcome and ranges that are narrow but still contain it. We recompute the WIS of
+  every model using only the nine quantile levels ci-proto produces, 10% to 90%.
 - Models are scored on the same forecasts as RespiCast's own evaluation: the countries and
   horizons the hub asks for in each round.
 - Each comparison is a ratio of total WIS. Intervals resample rounds (10,000 draws) and need at
