@@ -6,7 +6,9 @@ latest data release exactly as forecast.py does, puts the nine quantiles on the 
 checks the file against the hub's rules and writes it. The weekly workflow
 (.github/workflows/respicast.yml) runs it and then opens the pull request to the hub.
 
-    python examples/respicast/submit.py --hub HUB [--round YYYY-MM-DD] [--output FOLDER]
+    python examples/respicast/submit.py --hub HUB [--round YYYY-MM-DD] [--output FOLDER] [--dry-run]
+
+Live runs require an open submission window. Use --dry-run to prepare historical rounds locally.
 """
 
 from __future__ import annotations
@@ -55,8 +57,23 @@ def window(hub: Path) -> tuple[int, int]:
     return due["submissions_due"]["start"], due["submissions_due"]["end"]
 
 
+def check_window(hub: Path, origin: pd.Timestamp, now: pd.Timestamp) -> None:
+    """Reject live forecasts outside the hub's submission window."""
+    start, end = window(hub)
+    timezone = json.loads((hub / "hub-config" / "admin.json").read_text())["timezone"]
+    today = now.tz_convert(timezone).tz_localize(None).normalize()
+    opens, closes = origin + pd.Timedelta(days=start), origin + pd.Timedelta(days=end)
+    if not opens <= today <= closes:
+        raise SystemExit(
+            f"The {origin.date()} round only accepts submissions from {opens.date()} through "
+            f"{closes.date()} in {timezone}. Use --dry-run to prepare a historical round."
+        )
+
+
 def open_round(hub: Path, today: pd.Timestamp) -> pd.Timestamp:
     """The first round on or after ``today``: the one taking submissions now."""
+    timezone = json.loads((hub / "hub-config" / "admin.json").read_text())["timezone"]
+    today = today.tz_convert(timezone).tz_localize(None)
     dates = sorted(pd.Timestamp(d) for d in options(hub, next(iter(TARGETS)))["origin_date"])
     later = [d for d in dates if d >= today.normalize()]
     if not later:
@@ -152,10 +169,15 @@ def main() -> None:
     parser.add_argument("--round", help="round date (a Wednesday); default: the open round")
     parser.add_argument("--output", type=Path, default=OUTPUT / "submission")
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
+    parser.add_argument(
+        "--dry-run", action="store_true", help="prepare a file even if the round is closed"
+    )
     args = parser.parse_args()
 
-    today = pd.Timestamp.now(tz="UTC").tz_localize(None)
+    today = pd.Timestamp.now(tz="UTC")
     origin = pd.Timestamp(args.round) if args.round else open_round(args.hub, today)
+    if not args.dry_run:
+        check_window(args.hub, origin, today)
     start, _ = window(args.hub)
     released = {target: latest_release(args.hub, target) for target in TARGETS}
     for target, date in released.items():
@@ -169,6 +191,8 @@ def main() -> None:
     model = load_model(MODEL, revision=REVISION, device=args.device)
     table, report = submission(args.hub, origin, model)
     check(table, args.hub, origin)
+    if not args.dry_run:
+        check_window(args.hub, origin, pd.Timestamp.now(tz="UTC"))
 
     relative = Path("model-output") / NAME / f"{origin.date()}-{NAME}.csv"
     path = args.output / relative

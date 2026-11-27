@@ -6,9 +6,10 @@
 # ROUND is the round's date and FOLDER is submit.py's --output folder. The file goes to a new
 # branch of FORK, made from its main once that is brought up to the hub's, and the pull request
 # goes from there to HUB, whose checks merge a valid submission by themselves. Nothing happens if
-# the round is already on the hub's main or has an open pull request. With DRY_RUN=1 it runs those
-# checks and says what it would do. GH_TOKEN must be able to write to FORK and open pull requests
-# on HUB.
+# the round is already on the hub's main or has an open pull request with no failed checks. An
+# open pull request with failed checks stops the script and reports that intervention is needed.
+# With DRY_RUN=1 it runs those checks and says what it would do. GH_TOKEN must be able to write to
+# FORK and open pull requests on HUB.
 set -euo pipefail
 
 round=$1
@@ -47,6 +48,17 @@ fi
 open=$(gh pr list -R "$hub" --head "$branch" --state open --json url,headRepositoryOwner \
     --jq "[.[] | select(.headRepositoryOwner.login == \"${fork%%/*}\")][0].url // \"\"")
 if [[ -n $open ]]; then
+    failed=$(gh pr view "$open" -R "$hub" --json statusCheckRollup --jq '
+        .statusCheckRollup[] |
+        select((.conclusion != null and .conclusion != "" and
+                .conclusion != "SUCCESS" and .conclusion != "NEUTRAL" and
+                .conclusion != "SKIPPED") or .state == "ERROR" or .state == "FAILURE") |
+        "\(.name // .context): \(.conclusion // .state) \(.detailsUrl // .targetUrl)"')
+    if [[ -n $failed ]]; then
+        echo "::error::The $round round's open pull request has failed checks; intervention is needed: $open" >&2
+        printf '%s\n' "$failed" >&2
+        exit 1
+    fi
     echo "The $round round already has an open pull request: $open"
     exit 0
 fi

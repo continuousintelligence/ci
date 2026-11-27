@@ -2,8 +2,9 @@ name: RespiCast submission
 
 # Submits ci-proto's forecasts to ECDC's RespiCast hub every week (examples/respicast).
 # The hub publishes new data on Fridays and takes forecasts until 23:59 CET on Wednesday. The
-# Saturday run normally submits; the Monday and Tuesday runs only act if it did not. The hub's
-# own checks merge a valid submission, so a pull request that opens is a live forecast.
+# Saturday run normally submits; the Monday and Tuesday runs only act if it did not. Opening a
+# pull request submits a real forecast to the hub. After validation succeeds, the hub enables
+# automatic merging.
 
 on:
   schedule:
@@ -37,6 +38,7 @@ jobs:
       HUB_REPO: european-modelling-hubs/RespiCast-SyndromicIndicators
       # The fork the pull requests come from; set the RESPICAST_FORK variable to change it.
       FORK_REPO: ${{ vars.RESPICAST_FORK || 'Benjamin-Walker/RespiCast-SyndromicIndicators' }}
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && '1' || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -61,6 +63,7 @@ jobs:
           uv run --locked python examples/respicast/submit.py
           --hub "$RUNNER_TEMP/hub" --output "$RUNNER_TEMP/submission" --device cpu
           ${ROUND:+--round "$ROUND"}
+          ${DRY_RUN:+--dry-run}
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: respicast-${{ steps.forecast.outputs.round }}
@@ -68,7 +71,6 @@ jobs:
       - name: Open the pull request to the hub
         env:
           GH_TOKEN: ${{ secrets.RESPICAST_TOKEN || github.token }}
-          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && '1' || '' }}
           HAS_TOKEN: ${{ secrets.RESPICAST_TOKEN != '' }}
           ROUND: ${{ steps.forecast.outputs.round }}
           AUTHOR_NAME: Ben Walker
