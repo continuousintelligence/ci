@@ -49,6 +49,24 @@ The first run fetches the hub at the pinned commit (about 400 MB) into
 `outputs/respicast/hub`; outputs go to `outputs/respicast`. Pass `--hub` to use an existing
 checkout and `--output` for another folder.
 
+## Weekly submissions
+
+ci-proto also forecasts live, as `CI-ci_proto` on the hub. Each Saturday, after the hub's Friday
+data release, the [RespiCast submission](../../.github/workflows/respicast.yml) workflow runs
+`submit.py` for the open round on a standard CPU runner. That script forecasts from the hub's
+latest data in the same way as `forecast.py`, extends the nine quantiles to the hub's 23 levels
+and checks the file against the hub's rules. `open_pr.sh` then opens the pull request to the
+hub. The workflow runs on Saturday, Monday and Tuesday. Monday and Tuesday provide backup
+attempts, opening a submission PR only if that round has neither an open PR nor a forecast file
+already merged into the hub.
+
+```bash
+python examples/respicast/submit.py --hub HUB_CHECKOUT  # writes the open round's file
+```
+
+Use `--round YYYY-MM-DD --dry-run` to prepare a historical round. For a historical run through
+the workflow, leave its `dry_run` input enabled.
+
 ## Scoring
 
 - WIS ([Bracher et al. 2021](https://doi.org/10.1371/journal.pcbi.1008618)) rewards a median

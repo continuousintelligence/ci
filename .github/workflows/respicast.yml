@@ -1,0 +1,83 @@
+name: RespiCast submission
+
+# Submits ci-proto's forecasts to ECDC's RespiCast hub every week (examples/respicast).
+# The hub publishes new data on Fridays and takes forecasts until 23:59 CET on Wednesday. The
+# Saturday run normally submits; the Monday and Tuesday runs only act if it did not. Opening a
+# pull request submits a real forecast to the hub. After validation succeeds, the hub enables
+# automatic merging.
+
+on:
+  schedule:
+    - cron: '0 8 * * 6'
+    - cron: '0 8 * * 1'
+    - cron: '0 8 * * 2'
+  workflow_dispatch:
+    inputs:
+      round:
+        description: Round date (YYYY-MM-DD); leave empty for the round open now
+        required: false
+      dry_run:
+        description: Make and check the forecasts without opening the pull request
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
+
+concurrency:
+  group: respicast-submission
+  cancel-in-progress: false
+
+jobs:
+  submit:
+    # Only the public repository submits on a schedule.
+    if: github.repository == 'continuousintelligence/ci' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      HUB_REPO: european-modelling-hubs/RespiCast-SyndromicIndicators
+      # The fork the pull requests come from; set the RESPICAST_FORK variable to change it.
+      FORK_REPO: ${{ vars.RESPICAST_FORK || 'Benjamin-Walker/RespiCast-SyndromicIndicators' }}
+      DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run && '1' || '' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@68559e99cc807c1eb7e9238fd43a15bba460eec2 # v10.3.3
+        with:
+          version: '0.11.30'
+          python-version: '3.13'
+          enable-cache: true
+      - name: Install locked dependencies
+        run: uv sync --locked
+      - name: Fetch the hub's latest data
+        run: |
+          git clone --depth 1 --filter=blob:none --sparse \
+            "https://github.com/$HUB_REPO.git" "$RUNNER_TEMP/hub"
+          git -C "$RUNNER_TEMP/hub" sparse-checkout set hub-config target-data
+      - name: Forecast and check the submission
+        id: forecast
+        env:
+          ROUND: ${{ inputs.round }}
+        run: >-
+          uv run --locked python examples/respicast/submit.py
+          --hub "$RUNNER_TEMP/hub" --output "$RUNNER_TEMP/submission" --device cpu
+          ${ROUND:+--round "$ROUND"}
+          ${DRY_RUN:+--dry-run}
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: respicast-${{ steps.forecast.outputs.round }}
+          path: ${{ runner.temp }}/submission/${{ steps.forecast.outputs.file }}
+      - name: Open the pull request to the hub
+        env:
+          GH_TOKEN: ${{ secrets.RESPICAST_TOKEN || github.token }}
+          HAS_TOKEN: ${{ secrets.RESPICAST_TOKEN != '' }}
+          ROUND: ${{ steps.forecast.outputs.round }}
+          AUTHOR_NAME: Ben Walker
+          AUTHOR_EMAIL: 38265558+Benjamin-Walker@users.noreply.github.com
+        run: |
+          if [[ -z $DRY_RUN && $HAS_TOKEN != true ]]; then
+            echo "::error::Add a RESPICAST_TOKEN secret that can push to $FORK_REPO."
+            exit 1
+          fi
+          bash examples/respicast/open_pr.sh "$ROUND" "$RUNNER_TEMP/submission"
