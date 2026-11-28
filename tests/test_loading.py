@@ -36,6 +36,27 @@ def test_loading_and_forecasting(release_files):
     assert model.quantiles[1] == 0.5
 
 
+@pytest.mark.parametrize("overrides", [None, {}])
+def test_omitted_and_empty_tta_overrides_preserve_defaults(release_files, overrides):
+    """Optional overrides leave every configured setting and forecast unchanged."""
+    default = load_model(*release_files, device="cpu")
+    model = load_model(*release_files, device="cpu", tta_overrides=overrides)
+    assert model._tta == default._tta == json.loads(release_files[1].read_text())
+    history = torch.tensor([[0.2, 1.3, -0.7, 0.5]])
+    torch.testing.assert_close(
+        model.forecast(history, 3), default.forecast(history, 3), rtol=0, atol=0
+    )
+    assert overrides is None or overrides == {}
+
+
+def test_unknown_tta_override_names_the_key(release_files):
+    """Misspelled override keys fail clearly without changing the supplied dictionary."""
+    overrides = {"static_groups": 0, "unknown_setting": 0}
+    with pytest.raises(ValueError, match=r"unknown=\['unknown_setting'\]"):
+        load_model(*release_files, device="cpu", tta_overrides=overrides)
+    assert overrides == {"static_groups": 0, "unknown_setting": 0}
+
+
 @pytest.mark.parametrize("count", [9, 99])
 def test_quantile_heads_come_from_checkpoint_metadata(release_files, count):
     """Both head counts reconstruct strictly and return the checkpoint's quantile grid."""
@@ -150,6 +171,7 @@ def test_malformed_model_configuration_fails_with_value_error(release_files, pat
         load_model(checkpoint, tta, device="cpu")
 
 
+@pytest.mark.parametrize("via_overrides", [False, True])
 @pytest.mark.parametrize(
     "change",
     [
@@ -181,13 +203,17 @@ def test_malformed_model_configuration_fails_with_value_error(release_files, pat
         {"chunk_joint": -1},
     ],
 )
-def test_invalid_release_configuration_fails(release_files, change):
-    """The loader rejects malformed types and invalid calibration values."""
-    _, path = release_files
-    data = json.loads(path.read_text())
-    path.write_text(json.dumps(data | change))
+def test_invalid_release_configuration_fails(release_files, change, via_overrides):
+    """JSON files and overrides share validation of types and calibration values."""
+    checkpoint, path = release_files
+    if not via_overrides:
+        data = json.loads(path.read_text())
+        path.write_text(json.dumps(data | change))
     with pytest.raises(ValueError):
-        _load_tta(path)
+        if via_overrides:
+            load_model(checkpoint, path, device="cpu", tta_overrides=change)
+        else:
+            _load_tta(path)
 
 
 @pytest.mark.parametrize(

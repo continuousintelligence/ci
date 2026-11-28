@@ -52,6 +52,37 @@ def download(monkeypatch: pytest.MonkeyPatch, bundle: Path, config_download: Moc
     return mocked
 
 
+@pytest.mark.parametrize("route", ["hub", "bundle", "checkpoint"])
+def test_tta_overrides_preserve_other_settings_and_inputs(
+    release_files: tuple[Path, Path], bundle: Path, download: Mock, route: str
+) -> None:
+    """All loading routes apply partial overrides without editing the file or caller's dict."""
+    arguments = {
+        "hub": ("test-owner/test-model",),
+        "bundle": (bundle,),
+        "checkpoint": release_files,
+    }
+    path = release_files[1] if route == "checkpoint" else bundle / "tta.json"
+    settings = json.loads(path.read_text())
+    settings.update(static_groups=2, joint_neighbours=8, chunk_joint=100)
+    path.write_text(json.dumps(settings))
+    before = path.read_bytes()
+    overrides = {
+        "static_groups": 0,
+        "joint_neighbours": 0,
+        "chunk_joint": 0,
+        "tta_sign_flip": False,
+    }
+    original = overrides.copy()
+
+    model = load_model(*arguments[route], device="cpu", tta_overrides=overrides)
+
+    assert model._tta == settings | original
+    assert overrides == original
+    assert path.read_bytes() == before
+    assert load_model(*arguments[route], device="cpu")._tta == settings
+
+
 @pytest.mark.parametrize("revision", [None, "v1", "a" * 40])
 def test_hub_resolves_both_files_in_one_snapshot(
     release_files: tuple[Path, Path], download: Mock, revision: str | None
@@ -282,6 +313,41 @@ def test_long_model_selection_and_reuse(long_bundle: Path, download: Mock, monke
     reference = ref(auto)
     del auto
     assert reference() is None
+
+
+@pytest.mark.parametrize("remote", [False, True])
+def test_tta_overrides_reach_lazy_long_model(
+    long_bundle: Path, download: Mock, monkeypatch: pytest.MonkeyPatch, remote: bool
+) -> None:
+    """Long weights stay lazy and cached, and retain overrides even if the caller edits its dict."""
+    path = long_bundle / "tta.json"
+    settings = json.loads(path.read_text())
+    settings.update(static_groups=2, joint_neighbours=8, chunk_joint=100)
+    path.write_text(json.dumps(settings))
+    before = path.read_bytes()
+    overrides = {
+        "static_groups": 0,
+        "joint_neighbours": 0,
+        "chunk_joint": 0,
+        "tta_sign_flip": False,
+    }
+    expected = settings | overrides
+    loads = Mock(wraps=torch.load)
+    monkeypatch.setattr(torch, "load", loads)
+    source = "test-owner/test-model" if remote else long_bundle
+
+    model = load_model(source, device="cpu", tta_overrides=overrides)
+    assert loads.call_count == 1
+    assert model._tta == expected
+    overrides.update(static_groups=3, unknown_setting=1)
+    for length, expected_loads in ((16, 1), (17, 2), (33, 2)):
+        history = torch.sin(torch.arange(length) * 0.7).repeat(2, 1)
+        assert model.forecast(history, 3).isfinite().all()
+        assert loads.call_count == expected_loads
+    long = model._long_model()
+    assert long is model._long_model()
+    assert long._tta == model._tta == expected
+    assert path.read_bytes() == before
 
 
 @pytest.mark.skipif(torch.cuda.device_count() < 2, reason="Two CUDA devices are required")

@@ -99,6 +99,7 @@ def load_model(
     device: str = "auto",
     *,
     revision: str | None = None,
+    tta_overrides: dict[str, bool | int | float] | None = None,
 ) -> Forecaster:
     """Load a local model bundle, Hugging Face model ID, or checkpoint plus TTA file.
 
@@ -110,13 +111,19 @@ def load_model(
     ``Path`` or ``./`` prefix to mark an ambiguous relative path as local.
     An optional ``model-long.ckpt`` shares the bundle's TTA and is selected
     when history exceeds the primary checkpoint's context length.
+
+    ``tta_overrides`` replaces selected settings from the loaded ``tta.json``
+    in memory, preserving unspecified settings. Unknown keys and invalid values
+    raise ``ValueError``. The same overrides apply to the lazily loaded long
+    checkpoint. Neither the file nor the supplied dictionary is modified.
     """
+    tta_overrides = dict(tta_overrides) if tta_overrides is not None else None
     placement = _device(device)
     path, tta_path, info_path = _files(checkpoint, tta_config, revision)
     payload = torch.load(path, map_location="cpu", weights_only=True, mmap=True)
     from .ci_proto._checkpoint import from_checkpoint
 
-    forecaster = from_checkpoint(payload, tta_path, placement)
+    forecaster = from_checkpoint(payload, tta_path, placement, tta_overrides=tta_overrides)
     placement = forecaster.device
     if info_path is not None:
         forecaster._info = _model_info(info_path, forecaster)
@@ -129,7 +136,9 @@ def load_model(
         def load_long() -> Forecaster:
             context = torch.cuda.device(placement) if placement.type == "cuda" else nullcontext()
             with context:
-                long = load_model(long_path, tta_path, device=placement.type)
+                long = load_model(
+                    long_path, tta_path, device=placement.type, tta_overrides=tta_overrides
+                )
             if not torch.equal(long.quantiles, quantiles) or (
                 long._model.config.future_len != future_len
             ):
