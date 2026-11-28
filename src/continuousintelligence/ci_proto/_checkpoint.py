@@ -10,7 +10,9 @@ from ._forecast import Forecaster
 from ._model import Model
 
 
-def _load_tta(path: str | Path) -> dict[str, float]:
+def _load_tta(
+    path: str | Path, tta_overrides: dict[str, bool | int | float] | None = None
+) -> dict[str, float]:
     booleans = {
         "postprocess",
         "tta_diff",
@@ -39,6 +41,7 @@ def _load_tta(path: str | Path) -> dict[str, float]:
     raw = json.loads(Path(path).read_text())
     if not isinstance(raw, dict):
         raise ValueError("tta config must contain a JSON object")
+    raw.update(tta_overrides or {})
     missing = required - raw.keys()
     unknown = raw.keys() - required
     if missing or unknown:
@@ -71,9 +74,15 @@ def _load_tta(path: str | Path) -> dict[str, float]:
     return result
 
 
-def from_checkpoint(payload: object, tta_config: str | Path, device: torch.device) -> Forecaster:
+def from_checkpoint(
+    payload: object,
+    tta_config: str | Path,
+    device: torch.device,
+    *,
+    tta_overrides: dict[str, bool | int | float] | None = None,
+) -> Forecaster:
     """Build ci-proto from a loaded checkpoint and its calibration."""
-    tta = _load_tta(tta_config)
+    tta = _load_tta(tta_config, tta_overrides)
     metadata = payload.get("hyper_parameters") if isinstance(payload, dict) else None
     if not isinstance(metadata, dict) or not isinstance(metadata.get("model"), dict):
         raise ValueError("checkpoint must contain a hyper_parameters.model mapping")

@@ -164,8 +164,19 @@ model = ci.load_model("ContinuousIntelligence/ci-proto")
 prediction = model.forecast(history, horizon=24)
 ```
 
-`horizon` can be any positive integer and defaults to 320. For example, when forecasting hourly data, a horizon of
-24 predicts the next day. By default, all of the variables are forecast together. If you want independent forecasts, pass each variable in a separate call.
+`horizon` can be any positive integer and defaults to 320. For example, when forecasting
+hourly data, a horizon of 24 predicts the next day.
+
+By default, ci-proto assumes that series passed together share a common time axis and
+forecasts them jointly. For example, `store_a` and `store_b` might have similar weekly
+sales patterns, so the history of one store can help forecast the other.
+
+If the series have different forecast cutoffs, pass per-series
+`timestamps` so the model only shares information between series with the same cutoff.
+Without them, a later series' history could reveal future information about an earlier
+series, causing temporal leakage. See [Dates and frequency](#dates-and-frequency) for
+how to supply timestamps. To forecast each series independently, see
+[Loading models and pinning revisions](#loading-models-and-pinning-revisions).
 
 ### Read the forecast
 
@@ -189,11 +200,13 @@ prediction.to_csv("forecast.csv")
 
 </details>
 
+<a id="dates-and-frequency"></a>
+
 <details>
 <summary><strong>Dates and frequency</strong></summary>
 
-Dates are used automatically to provide calendar information, such as the hour and day
-of the week.
+Dates identify the time grid for your history and forecast horizon. They also provide
+calendar information, such as the hour and day of the week.
 
 **PyTorch tensors and NumPy arrays**
 
@@ -253,6 +266,17 @@ The timestamp arguments use the following shapes, with `T`, `H`, and `V` as defi
 
 For gaps in a regular history, insert the missing time steps and use `NaN` for their values. For uneven histories, left-pad values with `NaN` and timestamps with `torch.iinfo(torch.int64).min`.
 
+**Align forecast cutoffs**
+
+Without dates, all series in a call are assumed to share a common time grid and
+forecast cutoff: matching positions represent the same time, and each forecast starts
+after the last history position. For series with different cutoffs, supply per-series
+`timestamps`. The model then only shares information between series with the same cutoff.
+
+If dates are omitted for series with different time grids or cutoffs, cross-series
+interaction can introduce temporal leakage. To disable this information sharing, see
+[Loading models and pinning revisions](#loading-models-and-pinning-revisions).
+
 </details>
 
 <details>
@@ -269,10 +293,29 @@ and device.
 
 | Argument | Shape | Requirements |
 | --- | --- | --- |
-| `past_covariates` | `[past_variables, T]` | Must have exactly the same history length as `history`. |
-| `future_covariates` | `[known_variables, T + H]` | Must cover both the observed history and the requested forecast horizon. |
+| `past_covariates` | `[past_variables, T]` or `[V, past_variables, T]` | Must have exactly the same history length as `history`. |
+| `future_covariates` | `[known_variables, T + H]` or `[V, known_variables, T + H]` | Must cover both the observed history and the requested forecast horizon. |
 | `categorical_past` | Tuple of variable indices | Selects categorical variables in `past_covariates`; defaults to `()`. |
 | `categorical_future` | Tuple of variable indices | Selects categorical variables in `future_covariates`; defaults to `()`. |
+
+Two-dimensional covariates are shared across targets; three-dimensional tensors or arrays
+provide separate covariates for each history row.
+
+Use `static_features` to provide static information about each series, such as the region
+of each store, with values in history row order. For history containing six stores,
+you could pass:
+
+```python
+prediction = model.forecast(
+    history,
+    horizon=24,
+    static_features={"region": ["north", "north", "north", "south", "south", "south"]},
+)
+```
+For a northern store, ci-proto can average the histories of the other northern stores
+with the same forecast cutoff, after scaling them to comparable units. It supplies that
+average as an extra input to help forecast the store. The `static_groups` setting controls
+how many attributes can be used this way; setting `static_groups` to `0` disables this feature.
 
 A categorical covariate describes a category, such as the type of promotion running in
 a store. For example, `0` could mean no promotion, `1` an email campaign, and `2` a discount.
@@ -299,6 +342,8 @@ Use `NaN` for missing covariate observations.
 
 </details>
 
+<a id="loading-models-and-pinning-revisions"></a>
+
 <details>
 <summary><strong>Loading models and pinning revisions</strong></summary>
 
@@ -310,6 +355,20 @@ model = ci.load_model("ContinuousIntelligence/ci-proto", revision="<commit SHA>"
 model = ci.load_model("./local/continuousintelligence")
 model = ci.load_model("model.ckpt", "tta.json")
 ```
+
+Use `tta_overrides` to replace selected test-time settings in memory. To disable
+cross-series inference and forecast each history row independently:
+
+```python
+model = ci.load_model(
+    "ContinuousIntelligence/ci-proto",
+    tta_overrides={"static_groups": 0, "joint_neighbours": 0, "chunk_joint": 0},
+)
+```
+
+Overrides work with all loading routes and also apply to the lazily loaded long-context
+checkpoint. Unspecified settings are preserved; unknown keys and invalid values are
+rejected. Neither `tta.json` nor the supplied dictionary is modified.
 
 A bundle contains:
 
@@ -420,6 +479,17 @@ calibration run automatically without changing model weights.
 | `integer_round` | Rounds forecasts when the observed history contains only integers. |
 | `calendar_covariates` | Adds calendar features from dates and frequency. |
 | `bfloat16` | Enables reduced-precision inference; `false` uses float32. |
+| `static_groups` | Maximum number of static grouping columns used to build summaries of other series. |
+| `joint_neighbours` | Joint group size, including the target, for neighbour inference. |
+| `chunk_joint` | Maximum series per joint chunk when no covariates or static features are supplied. |
+
+Set a cross-series setting to `0` to disable that policy. These policies apply with or
+without `series_ids`; timestamps restrict sharing to series with the same forecast cutoff.
+
+Optionally pass `series_ids`, one unique string per history row, to keep the same series
+together when input rows are reordered. Without IDs, grouping uses input row order.
+IDs do not enable or disable information sharing, and forecasts are always returned in
+input row order.
 
 Edit a local `tta.json` to change these flags. Encoding, clipping, rounding, calendar
 features, and precision work independently of `postprocess`.

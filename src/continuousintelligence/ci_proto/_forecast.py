@@ -69,7 +69,7 @@ class Forecaster:
         series_ids: Sequence[str] | None = None,
         static_features: Mapping[str, Sequence[object]] | None = None,
     ) -> ForecastOutput:
-        """Forecast joint variables, or independent series identified by ``series_ids``.
+        """Forecast series using the loaded cross-series inference settings.
 
         ``history``: tensor or NumPy array ``[variables, time]``, pandas DataFrame
         (time rows, variable columns), Series, or CSV path with numeric columns.
@@ -89,9 +89,14 @@ class Forecaster:
         ``freq`` to generate ci-proto's calendar features. Without timestamps,
         calendar features are omitted. Leading padding uses int64's minimum value.
 
-        ``series_ids`` enables cohort policies for independent univariate rows.
-        Supply the complete cohort for a window. ``static_features`` maps column
-        names to values in input row order. Cohort covariates can also be shaped
+        Cross-series inference follows the loaded TTA settings and only combines
+        series with the same forecast origin when timestamps are supplied. Without
+        timestamps, all rows are assumed to share a time grid and forecast origin.
+        ``series_ids`` optionally gives one unique string per row for stable sorting
+        before grouping; without IDs, grouping follows input row order.
+        Outputs retain input row order.
+        ``static_features`` maps column names to values in input row order.
+        Per-series covariates can also be shaped
         ``[variables, covariates, time]``, including the horizon for known values.
 
         Returns float32 quantiles in the original units. Tensors retain the input
@@ -125,66 +130,33 @@ class Forecaster:
         stamps = _timestamps(timestamps, freq, count, length, horizon)
         if stamps is not None and tta["calendar_covariates"] and freq is None:
             raise ValueError("freq is required to generate calendar covariates")
-        if series_ids is not None:
-            past = _cohort_covariates(
-                past_covariates, "past_covariates", count, length, 0, device, categorical_past
-            )
-            future = _cohort_covariates(
-                future_covariates,
-                "future_covariates",
-                count,
-                length,
-                horizon,
-                device,
-                categorical_future,
-            )
-            cases = _cohort_cases(
-                history,
-                horizon,
-                tta,
-                past,
-                future,
-                categorical_past,
-                categorical_future,
-                stamps,
-                freq,
-                series_ids,
-                static_features,
-                calendar_stamps=calendar_stamps,
-            )
-            return restore(_run_cases(model, cases, count, horizon, tta))
-        if static_features is not None:
-            raise ValueError("static_features requires series_ids")
-        if stamps is not None:
-            if not torch.equal(stamps, stamps[:1].expand_as(stamps)):
-                raise ValueError("different timestamp axes require series_ids")
-            stamps = stamps[0]
-            start = int((stamps != torch.iinfo(torch.int64).min).long().argmax())
-            history, stamps = history[:, start:], stamps[start:]
-            if calendar_stamps is not None:
-                calendar_stamps = calendar_stamps[start:]
-            if past_covariates is not None:
-                past_covariates = past_covariates[:, start:]
-            if future_covariates is not None:
-                future_covariates = future_covariates[:, start:]
-        context, future = _context(
+        past = _cohort_covariates(
+            past_covariates, "past_covariates", count, length, 0, device, categorical_past
+        )
+        future = _cohort_covariates(
+            future_covariates,
+            "future_covariates",
+            count,
+            length,
+            horizon,
+            device,
+            categorical_future,
+        )
+        cases = _cohort_cases(
             history,
             horizon,
-            past_covariates,
-            future_covariates,
+            tta,
+            past,
+            future,
             categorical_past,
             categorical_future,
-            bool(tta["target_encode_categoricals"]),
-        )
-        context, future = _with_calendar(
-            context,
-            future,
-            count,
-            stamps if calendar_stamps is None else calendar_stamps,
+            stamps,
             freq,
-            bool(tta["calendar_covariates"]),
+            series_ids,
+            static_features,
+            calendar_stamps=calendar_stamps,
         )
-        return restore(_predict(model, context[None], future[None], count, horizon, tta)[0])
+        return restore(_run_cases(model, cases, count, horizon, tta))
 
 
 def _rows(
@@ -556,7 +528,7 @@ def _cohort_covariates(
 ) -> Tensor | None:
     if value is None:
         if categorical:
-            raise ValueError(f"categorical indices require {name}")
+            raise ValueError(f"categorical selection requires {name}")
         return None
     if not isinstance(value, Tensor) or value.ndim not in (2, 3):
         raise ValueError(f"{name} must be a two- or three-dimensional tensor")
@@ -564,8 +536,10 @@ def _cohort_covariates(
     if rows.shape[0] != count or rows.shape[1] < 1:
         raise ValueError(f"{name} must have covariates for every series")
     width = length + horizon
-    if (horizon and rows.shape[-1] < width) or (not horizon and rows.shape[-1] != width):
-        raise ValueError(f"{name} must cover the required time steps")
+    if horizon and rows.shape[-1] < width:
+        raise ValueError(f"{name} must cover history plus horizon")
+    if not horizon and rows.shape[-1] != width:
+        raise ValueError(f"{name} must have the same history length")
     rows = rows[..., :width]
     flat = _rows(rows.reshape(-1, width), name, device, dtype=None)
     # Validate indices without fitting an encoding across unrelated series.
@@ -587,15 +561,13 @@ def _cohort_cases(
     categorical_future: tuple[int, ...],
     stamps: Tensor | None,
     freq: str | None,
-    series_ids: Sequence[str],
+    series_ids: Sequence[str] | None,
     static_features: Mapping[str, Sequence[object]] | None,
     *,
     calendar_stamps: Tensor | None = None,
 ) -> Iterable[_Case]:
-    from ._groups import chunk_groups, joint_neighbour_rows, static_group_rows
-
     count, length = history.shape
-    if (
+    if series_ids is not None and (
         isinstance(series_ids, str)
         or len(series_ids) != count
         or any(not isinstance(name, str) or not name for name in series_ids)
@@ -623,30 +595,40 @@ def _cohort_cases(
     else:
         calendar_stamps = stamps if calendar_stamps is None else calendar_stamps.expand_as(stamps)
         starts = (stamps != torch.iinfo(torch.int64).min).long().argmax(dim=1).tolist()
-    order = sorted(range(count), key=lambda i: series_ids[i])
+    order = (
+        list(range(count))
+        if series_ids is None
+        else sorted(range(count), key=lambda i: series_ids[i])
+    )
     stamps_np = stamps.numpy()
     bare = not statics and past is None and future is None
     chunk = int(tta["chunk_joint"]) if bare else 0
     static_rows = None
     neighbours = None
-    if (statics and tta["static_groups"]) or (
-        not statics and not chunk and tta["joint_neighbours"]
+    if count > 1 and (
+        (statics and tta["static_groups"])
+        or (not statics and not chunk and tta["joint_neighbours"])
     ):
+        from ._groups import joint_neighbour_rows, static_group_rows
+
         histories = history.detach().double().cpu().numpy()
         histories_in_order = [histories[i, starts[i] :] for i in order]
         times = [stamps_np[i, starts[i] : length] for i in order]
-    if statics and tta["static_groups"]:
-        columns = [[statics[name][i] for i in order] for name in sorted(statics)]
-        static_rows = static_group_rows(
-            histories_in_order, times, columns, int(tta["static_groups"])
-        )
-    elif not statics and not chunk and tta["joint_neighbours"]:
-        neighbours = joint_neighbour_rows(histories_in_order, times, int(tta["joint_neighbours"]))
-    groups = (
-        chunk_groups([int(stamps_np[i, length - 1]) for i in order], chunk)
-        if chunk
-        else [[i] for i in range(count)]
-    )
+        if statics:
+            columns = [[statics[name][i] for i in order] for name in sorted(statics)]
+            static_rows = static_group_rows(
+                histories_in_order, times, columns, int(tta["static_groups"])
+            )
+        else:
+            neighbours = joint_neighbour_rows(
+                histories_in_order, times, int(tta["joint_neighbours"])
+            )
+    if chunk and count > 1:
+        from ._groups import chunk_groups
+
+        groups = chunk_groups([int(stamps_np[i, length - 1]) for i in order], chunk)
+    else:
+        groups = [[i] for i in range(count)]
     calendar_cache: dict[bytes, Tensor] = {}
     for members in groups:
         indices = [order[position] for position in members]

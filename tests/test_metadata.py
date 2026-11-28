@@ -9,6 +9,61 @@ from continuousintelligence import load_model
 DAY = 86_400 * 10**9
 
 
+@pytest.mark.parametrize("policy", ["independent", "chunks", "neighbours", "static"])
+@pytest.mark.parametrize("different_cutoffs", [False, True])
+def test_series_ids_only_control_order(release_files, policy: str, different_cutoffs: bool) -> None:
+    """Adding IDs in row order never changes which inference policies are applied."""
+    generator = torch.Generator().manual_seed(31)
+    history = torch.randn(6, 64, generator=generator)
+    stamps = torch.arange(67).expand(6, -1).clone() * DAY
+    if different_cutoffs:
+        stamps[3:] += DAY
+    overrides = {"static_groups": 0, "joint_neighbours": 0, "chunk_joint": 0}
+    arguments = {"timestamps": stamps, "freq": "D"}
+    if policy == "chunks":
+        overrides["chunk_joint"] = 2
+    elif policy == "neighbours":
+        overrides["joint_neighbours"] = 2
+        arguments["past_covariates"] = torch.randn(6, 1, 64, generator=generator)
+    elif policy == "static":
+        overrides["static_groups"] = 1
+        arguments["static_features"] = {"kind": ["a"] * 3 + ["b"] * 3}
+    model = load_model(*release_files, device="cpu", tta_overrides=overrides)
+    expected = model.forecast(history, 3, **arguments)
+    actual = model.forecast(history, 3, series_ids=list("abcdef"), **arguments)
+    torch.testing.assert_close(actual, expected, rtol=0, atol=0)
+
+
+def test_series_ids_preserve_chunks_when_rows_are_reordered(release_files) -> None:
+    """IDs keep group membership reproducible while outputs follow the caller's row order."""
+    model = load_model(*release_files, device="cpu", tta_overrides={"chunk_joint": 2})
+    history = torch.randn(6, 9, generator=torch.Generator().manual_seed(31))
+    identifiers = list("abcdef")
+    expected = model.forecast(history, 3, series_ids=identifiers)
+    order = [5, 0, 3, 1, 4, 2]
+    actual = model.forecast(history[order], 3, series_ids=[identifiers[i] for i in order])
+    torch.testing.assert_close(actual, expected[order], rtol=0, atol=0)
+
+
+@pytest.mark.parametrize("policy", ["chunk_joint", "joint_neighbours", "static_groups"])
+def test_other_forecast_origins_cannot_change_predictions_without_ids(
+    release_files, policy: str
+) -> None:
+    """Automatic grouping never borrows target values from a later forecast cutoff."""
+    history = torch.randn(6, 64, generator=torch.Generator().manual_seed(31))
+    stamps = torch.arange(67).expand(6, -1).clone() * DAY
+    stamps[3:] += DAY
+    arguments = {"timestamps": stamps, "freq": "D"}
+    if policy == "static_groups":
+        arguments["static_features"] = {"kind": ["a"] * 3 + ["b"] * 3}
+    model = load_model(*release_files, device="cpu", tta_overrides={policy: 2})
+    expected = model.forecast(history, 3, **arguments)
+    changed = history.clone()
+    changed[3:] = changed[3:] * 100 + 50
+    actual = model.forecast(changed, 3, **arguments)
+    torch.testing.assert_close(actual[:3], expected[:3], rtol=0, atol=0)
+
+
 def test_calendar_is_known_and_is_not_target_encoded() -> None:
     """Real calendar rows follow encoded known covariates and reveal only known future data."""
     model = Probe()
@@ -74,7 +129,8 @@ def test_chunks_follow_series_ids_and_restore_input_order() -> None:
     torch.testing.assert_close(result, expected)
 
 
-def test_different_forecast_origins_never_share_a_chunk() -> None:
+@pytest.mark.parametrize("with_ids", [False, True])
+def test_different_forecast_origins_never_share_a_chunk(with_ids: bool) -> None:
     """Even a large chunk budget cannot mix series ending at different timestamps."""
     model = Probe()
     stamps = torch.arange(6).expand(2, -1).clone() * DAY
@@ -86,7 +142,7 @@ def test_different_forecast_origins_never_share_a_chunk() -> None:
         {**TTA, "chunk_joint": 100},
         timestamps=stamps,
         freq="D",
-        series_ids=["a", "b"],
+        series_ids=["a", "b"] if with_ids else None,
     )
     assert [batch["x"].shape[0] for batch in model.batches] == [16]
     assert model.batches[0]["group_vector"].tolist() == [0] * 4 + [1] * 4 + [2] * 4 + [3] * 4
@@ -114,7 +170,8 @@ def test_neighbours_are_targets_and_covariates_stay_with_the_owner() -> None:
     assert first["group_vector"].tolist() == [i for i in range(6) for _ in range(3)]
 
 
-def test_static_groups_are_past_covariates_excluding_the_owner() -> None:
+@pytest.mark.parametrize("with_ids", [False, True])
+def test_static_groups_are_past_covariates_excluding_the_owner(with_ids: bool) -> None:
     """Static context pools only other histories and never becomes a future-known row."""
     model = Probe()
     model.config.context_len = 64
@@ -125,7 +182,7 @@ def test_static_groups_are_past_covariates_excluding_the_owner() -> None:
         history,
         2,
         {**TTA, "static_groups": 2, "differencing_max_horizon": 1},
-        series_ids=[str(i) for i in range(6)],
+        series_ids=[str(i) for i in range(6)] if with_ids else None,
         static_features={"kind": ["a", "a", "a", "b", "b", "b"]},
     )
     values = history.double()
@@ -138,7 +195,8 @@ def test_static_groups_are_past_covariates_excluding_the_owner() -> None:
     assert first["x"][1::2, -4:].isnan().all()
 
 
-def test_categorical_encodings_are_fitted_per_series() -> None:
+@pytest.mark.parametrize("with_ids", [False, True])
+def test_categorical_encodings_are_fitted_per_series(with_ids: bool) -> None:
     """A shared categorical row is encoded using each independent series' history only."""
     model = Probe()
     history = torch.tensor([[2.0, 4.0, 6.0], [10.0, 20.0, 30.0]])
@@ -149,7 +207,7 @@ def test_categorical_encodings_are_fitted_per_series() -> None:
         {**TTA, "differencing_max_horizon": 1},
         future_covariates=torch.tensor([[0, 0, 1, 0, 1, 2]]),
         categorical_future=(0,),
-        series_ids=["a", "b"],
+        series_ids=["a", "b"] if with_ids else None,
     )
     actual = model.batches[0]["x"][[1, 3], 1:7]
     expected = torch.tensor(
@@ -158,13 +216,22 @@ def test_categorical_encodings_are_fitted_per_series() -> None:
     torch.testing.assert_close(actual, expected)
 
 
-def test_ragged_history_padding_does_not_change_differencing() -> None:
+@pytest.mark.parametrize("with_ids", [False, True])
+def test_ragged_history_padding_does_not_change_differencing(with_ids: bool) -> None:
     """Packed histories use each series' real length and put the first difference at its start."""
     model = Probe()
     history = torch.tensor([[torch.nan, torch.nan, 0, 1, 2, 3], [10, 11, 12, 13, 14, 15]])
     stamps = torch.arange(8).expand(2, -1).clone() * DAY
     stamps[0, :2] = torch.iinfo(torch.int64).min
-    actual = forecast(model, history, 2, TTA, timestamps=stamps, freq="D", series_ids=["a", "b"])
+    actual = forecast(
+        model,
+        history,
+        2,
+        TTA,
+        timestamps=stamps,
+        freq="D",
+        series_ids=["a", "b"] if with_ids else None,
+    )
     expected = torch.cat(
         [forecast(Probe(), history[:1], 2, TTA), forecast(Probe(), history[1:], 2, TTA)]
     )
@@ -172,13 +239,16 @@ def test_ragged_history_padding_does_not_change_differencing() -> None:
     assert model.batches[0]["x"][0, :4].isnan().all()
 
 
-def test_packed_model_matches_separate_covariate_forecasts(release_files) -> None:
+@pytest.mark.parametrize("with_ids", [False, True])
+def test_packed_model_matches_separate_covariate_forecasts(release_files, with_ids: bool) -> None:
     """Independent cases share a neural call while preserving their own known covariates."""
     model = load_model(*release_files, device="cpu")
     generator = torch.Generator().manual_seed(10)
     history = torch.randn(3, 7, generator=generator)
     known = torch.randn(3, 1, 10, generator=generator)
-    actual = model.forecast(history, 3, future_covariates=known, series_ids=["c", "a", "b"])
+    actual = model.forecast(
+        history, 3, future_covariates=known, series_ids=["c", "a", "b"] if with_ids else None
+    )
     expected = torch.cat(
         [model.forecast(history[i : i + 1], 3, future_covariates=known[i]) for i in range(3)]
     )
@@ -194,7 +264,7 @@ def test_packed_model_matches_separate_covariate_forecasts(release_files) -> Non
         ({"timestamps": torch.tensor([0, 1, 2, 3, 3, 4])}, "increasing"),
         ({"series_ids": ["same", "same"]}, "unique"),
         ({"series_ids": ["one"]}, "unique"),
-        ({"static_features": {"kind": ["a", "b"]}}, "series_ids"),
+        ({"static_features": {"kind": ["a"]}}, "value per series"),
         ({"series_ids": ["a", "b"], "static_features": {"kind": ["a"]}}, "value per series"),
         ({"series_ids": ["a", "b"], "future_covariates": torch.ones(3, 1, 6)}, "every series"),
     ],
